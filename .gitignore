@@ -1,0 +1,100 @@
+
+# Python
+
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Compiled extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+
+# Virtual Environment
+
+
+venv/
+.venv/
+env/
+ENV/
+
+
+# Environment Variables
+
+
+.env
+.env.*
+
+
+# IDEs
+
+
+.vscode/
+.idea/
+
+# Operating System
+
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# Python Testing
+
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+
+# Jupyter
+
+
+.ipynb_checkpoints/
+
+# Logs
+
+
+*.log
+logs/
+
+
+# LangGraph
+
+
+.checkpoints/
+langgraph_checkpoints/
+
+
+# Temporary files
+
+
+*.tmp
+*.temp
+
+
+# MCP
+
+
+.mcp/
+mcp_cache/
+
+
+# Secrets
+
+secrets.json
+credentials.json
+*.pem
+*.key
+
+
+# Misc
+
+.cache/
