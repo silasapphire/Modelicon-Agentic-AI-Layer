@@ -2,14 +2,46 @@ import random
 
 from mcp.server.fastmcp import FastMCP
 
+from database.building.building_queries import get_room_temperature
+from database.building.building_writes import apply_bms_command
+from database.building.init_building_db import init_building_db
+from database.memory.init_memory_db import init_memory_db
+from database.memory.memory_queries import create_session, save_tool_call
+
 mcp = FastMCP("modelicon-building-tools")
+
+# The database files are created (schema-only, idempotent) as soon as the
+# MCP server process starts, so bms_write always has somewhere real to
+# persist to even on a fresh checkout.
+init_building_db()
+init_memory_db()
+
+# The live thermostat setpoint is persisted under this well-known target
+# name (same mechanism bms_write uses) so it survives the MCP server
+# subprocess being restarted between CLI sessions, instead of silently
+# resetting to a hardcoded default every time.
+_THERMOSTAT_TARGET = "global-thermostat"
+_DEFAULT_TEMP_C = 24.3
+
+# One memory-database session per MCP server process, used to log every
+# bms_write call as an auditable tool_calls row. The LangGraph side has
+# its own session concept (out of scope here); this is just enough to
+# make writes traceable without touching agents/graph code.
+_SERVER_SESSION_ID = create_session(user_id="mcp-server")
 
 _POWER_LOOKUP_C = {
     16: 5.0, 17: 4.2, 18: 3.5, 19: 2.9, 20: 2.4, 21: 1.6,
     22: 1.0,
     23: 1.3, 24: 1.7, 25: 2.2, 26: 2.8, 27: 3.5, 28: 4.3, 29: 5.2, 30: 6.2,
 }
-_current_temp_c = 24.3
+def _load_persisted_temp_c() -> float:
+    last_reading = get_room_temperature(_THERMOSTAT_TARGET)
+    if last_reading and last_reading.get("temperature") is not None:
+        return float(last_reading["temperature"])
+    return _DEFAULT_TEMP_C
+
+
+_current_temp_c = _load_persisted_temp_c()
 
 
 def _power_for(temp_c: float) -> float:
@@ -46,7 +78,13 @@ def current_temperature() -> dict:
 def set_temperature(temp_c: float = 24.3) -> dict:
     global _current_temp_c
     _current_temp_c = temp_c
-    return {"temp_c": _current_temp_c, "power_mw": _power_for(_current_temp_c), "ack": True}
+    persisted = apply_bms_command(target=_THERMOSTAT_TARGET, parameter="setpoint_c", value=temp_c)
+    return {
+        "temp_c": _current_temp_c,
+        "power_mw": _power_for(_current_temp_c),
+        "ack": True,
+        "persisted": persisted,
+    }
 
 
 @mcp.tool()
@@ -91,11 +129,23 @@ def modelica_sim(setpoint_c: float | None = None) -> dict:
 
 @mcp.tool()
 def bms_write(target: str = "", parameter: str = "", value: float | None = None) -> dict:
-    return {
+    persisted = apply_bms_command(target=target, parameter=parameter, value=value)
+
+    response = {
         "written": {"target": target, "parameter": parameter, "value": value},
-        "ack": True,
+        "ack": bool(persisted.get("success")),
         "latency_ms": random.randint(20, 90),
+        "persisted": persisted,
     }
+
+    save_tool_call(
+        session_id=_SERVER_SESSION_ID,
+        tool_name="bms_write",
+        arguments=response["written"],
+        result=response,
+    )
+
+    return response
 
 
 if __name__ == "__main__":
