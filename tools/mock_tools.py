@@ -1,92 +1,92 @@
-import random
-_FAKE_TOOLS = {
+import asyncio
+import atexit
+import json
+import os
+import sys
+import threading
+from contextlib import AsyncExitStack
 
-    # Query Agent
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
-    "sensor_data": lambda **kwargs: {
-        "temperature":24.3,
-        "humidity":55,
-        "co2":620,
-        "occupancy":18
-    },
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    "weather": lambda **kwargs: {
-        "outside_temperature":31,
-        "condition":"Sunny"
-    },
 
-    "history": lambda **kwargs: {
-        "avg_temperature":23.8,
-        "trend":"Rising"
-    },
-        "hvac_status": lambda **kwargs:{
+class _MCPClient:
+    def __init__(self):
+        self._loop = asyncio.new_event_loop()
+        self._session = None
+        self._tool_names = set()
+        self._stack = None
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
 
-        "supply_temp":14,
+    def _run_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
 
-        "load_kw":42,
+    def _submit(self, coro, timeout=30):
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=timeout)
 
-        "fan_speed":65
-    },
+    async def _connect(self):
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "mcp_server.server"],
+            cwd=_REPO_ROOT,
+        )
+        stack = AsyncExitStack()
+        devnull = open(os.devnull, "w")
+        read, write = await stack.enter_async_context(stdio_client(params, errlog=devnull))
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        tools = await session.list_tools()
 
-    "comfort_index": lambda **kwargs:{
+        self._stack = stack
+        self._session = session
+        self._tool_names = {t.name for t in tools.tools}
 
-        "pmv":0.6,
+    def _ensure_connected(self):
+        with self._lock:
+            if self._session is None:
+                self._submit(self._connect())
 
-        "status":"Slightly Warm"
-    },
-        "lighting_status": lambda **kwargs:{
+    async def _call(self, name, arguments):
+        result = await self._session.call_tool(name, arguments)
+        if result.isError:
+            message = result.content[0].text if result.content else "unknown MCP error"
+            return {"error": message}
+        if result.structuredContent is not None:
+            return result.structuredContent
+        text = result.content[0].text if result.content else "{}"
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return {"error": f"could not parse tool result: {text}"}
 
-        "lux":210,
+    def call_tool(self, name: str, **kwargs) -> dict:
+        self._ensure_connected()
+        if name not in self._tool_names:
+            return {"error": f"unknown tool '{name}'"}
+        try:
+            return self._submit(self._call(name, kwargs))
+        except Exception as exc:
+            return {"error": f"MCP call to '{name}' failed: {exc}"}
 
-        "target_lux":400
-    },
-        "access_status": lambda **kwargs:{
+    def close(self):
+        if self._session is None:
+            return
+        try:
+            self._submit(self._stack.aclose(), timeout=10)
+        except Exception:
+            pass
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5)
 
-        "active_badges":18,
 
-        "unauthorized":0
-    },
-        "safety_status": lambda **kwargs:{
+_client = _MCPClient()
+atexit.register(_client.close)
 
-        "fire":False,
 
-        "smoke":False,
-
-        "gas_ppm":12
-    },
-        "device_health": lambda **kwargs:{
-
-        "offline_devices":0,
-
-        "faults":[]
-    },
-        "optimizer": lambda **kwargs:{
-
-        "recommended_temp":25,
-
-        "expected_saving":11.5
-    },
-        "simulation": lambda **kwargs:{
-
-        "comfort_score":92,
-
-        "predicted_load":37.8
-    },
-        "bms_execute": lambda **kwargs:{
-
-        "ack":True,
-
-        "latency_ms":random.randint(20,80)
-    }
-
-}
-
-def call_tool(name: str, **kwargs):
-
-    if name not in _FAKE_TOOLS:
-
-        return {
-            "error":f"Unknown tool '{name}'"
-        }
-
-    return _FAKE_TOOLS[name](**kwargs)
+def call_tool(name: str, **kwargs) -> dict:
+    return _client.call_tool(name, **kwargs)

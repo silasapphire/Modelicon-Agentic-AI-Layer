@@ -1,49 +1,35 @@
-from typing import TypedDict
+from typing import Annotated, TypedDict
+from operator import add
+
+
+def merge_dict(left: dict, right: dict) -> dict:
+    return {**(left or {}), **(right or {})}
 
 
 class BuildingState(TypedDict, total=False):
-
-    # User input
     user_request: str
 
-    # Supervisor
     intent: str
     data_required: bool
-    active_domains: list[str]
+    active_domains: list
     emergency: bool
 
-    # Query Agent
     retrieved_data: dict
 
-    # Domain Agents
-    domain_outputs: dict
+    domain_outputs: Annotated[dict, merge_dict]
 
-    # Analysis
     analysis_result: dict
     needs_optimization: bool
-    needs_simulation: bool
-
-    # Optimization
     optimization_result: dict
-
-    # Simulation
     simulation_result: dict
-
-    # Coordination
     coordinated_plan: dict
 
-    # Guardrail
     guardrail_status: str
     guardrail_feedback: str
-
-    # Human approval
+    revision_count: int
     human_decision: str
 
-    # BMS
     execution_result: dict
-
-    # Final output
     final_response: str
 
-    # Logs
-    log: list[str]
+    log: Annotated[list, add]
