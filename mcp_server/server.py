@@ -1,9 +1,11 @@
 import random
+from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
 
 from database.building.building_queries import get_latest_sensor_data, get_room_temperature
 from database.building.building_writes import apply_bms_command
+from database.building.hvac_twin import predict_comfort_and_load
 from database.building.init_building_db import init_building_db
 from database.building.topology import is_known_room, topology_summary
 from database.memory.init_memory_db import init_memory_db
@@ -160,7 +162,17 @@ def energy_optimizer(request: str = "") -> dict:
 
 @mcp.tool()
 def modelica_sim(setpoint_c: float | None = None) -> dict:
-    return {"predicted_comfort_pmv": 0.3, "predicted_load_kw": 37.8}
+    """Digital-twin physics simulation: projects the room forward from its
+    current live temperature toward ``setpoint_c`` (defaults to the current
+    setpoint) and returns the predicted thermal comfort (PMV) and average
+    HVAC load once it gets there."""
+    target = setpoint_c if setpoint_c is not None else _current_temp_c
+    now = datetime.now()
+    return predict_comfort_and_load(
+        current_temp_c=_current_temp_c,
+        target_temp_c=target,
+        hour_of_day=now.hour + now.minute / 60.0,
+    )
 
 
 @mcp.tool()

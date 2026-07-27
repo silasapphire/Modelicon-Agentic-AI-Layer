@@ -6,9 +6,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 from sqlalchemy import text
 
 from pipeline_src.database.connection import DatabaseConnection
+from database.building.hvac_twin import simulate_hours
 from dashboard.agent_bridge import (
     ask_agent,
     new_session,
@@ -197,20 +199,88 @@ with right_panel:
 with center_panel:
 
     # --------------------------------------------------------
-    # DIGITAL TWIN PLACEHOLDER
+    # DIGITAL TWIN
     # --------------------------------------------------------
 
     if st.session_state.domain == "Digital Twin":
 
         st.markdown("### Digital Twin")
 
-        st.info(
-            "Digital Twin is currently a demo module."
+        st.write(
+            "Physics-based room + HVAC simulation (thermal resistance/capacitance "
+            "model) projected over a 24-hour cycle."
         )
 
-        st.write(
-            "Future Digital Twin functionality will appear here."
+        control1, control2 = st.columns(2)
+
+        target_temp_c = control1.slider(
+            "Target setpoint (°C)",
+            min_value=16.0,
+            max_value=30.0,
+            value=22.5,
+            step=0.5,
         )
+
+        initial_temp_c = control2.slider(
+            "Starting room temperature (°C)",
+            min_value=16.0,
+            max_value=30.0,
+            value=24.0,
+            step=0.5,
+        )
+
+        twin_states = list(
+            simulate_hours(
+                hours=24,
+                dt_minutes=15,
+                target_temp_c=target_temp_c,
+                initial_temp_c=initial_temp_c,
+            )
+        )
+        twin_df = pd.DataFrame(twin_states)
+
+        final_temp = twin_df["room_temp_c"].iloc[-1]
+        peak_power_kw = twin_df["hvac_power_w"].abs().max() / 1000.0
+        pct_conditioning = (twin_df["hvac_status"] != "OFF").mean() * 100.0
+
+        metric1, metric2, metric3 = st.columns(3)
+        metric1.metric("Final room temp", f"{final_temp:.1f} °C")
+        metric2.metric("Peak HVAC load", f"{peak_power_kw:.1f} kW")
+        metric3.metric("Time conditioning", f"{pct_conditioning:.0f}%")
+
+        chart_df = twin_df.melt(
+            id_vars=["timestamp"],
+            value_vars=["room_temp_c", "outside_temp_c"],
+            var_name="series",
+            value_name="temp_c",
+        )
+        chart_df["series"] = chart_df["series"].map(
+            {"room_temp_c": "Room Temp", "outside_temp_c": "Outside Temp"}
+        )
+
+        temp_lines = (
+            alt.Chart(chart_df)
+            .mark_line(strokeWidth=2)
+            .encode(
+                x=alt.X("timestamp:T", title="Time"),
+                y=alt.Y("temp_c:Q", title="Temperature (°C)"),
+                color=alt.Color(
+                    "series:N",
+                    title=None,
+                    scale=alt.Scale(
+                        domain=["Room Temp", "Outside Temp"],
+                        range=["#2a78d6", "#eb6834"],
+                    ),
+                ),
+            )
+        )
+        setpoint_rule = (
+            alt.Chart(pd.DataFrame({"target_temp_c": [target_temp_c]}))
+            .mark_rule(strokeDash=[4, 4], color="#898781")
+            .encode(y="target_temp_c:Q")
+        )
+
+        st.altair_chart(temp_lines + setpoint_rule, use_container_width=True)
 
     # --------------------------------------------------------
     # CHAT / QUERY PAGE
