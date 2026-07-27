@@ -1,0 +1,22 @@
+pipeline:
+  name: HVAC Data Pipeline
+  environment: development
+
+database:
+  host: localhost
+  port: 5432
+  database: HVAC.DB
+  user: postgres
+  password: ""
+
+tables:
+  raw_features: hvac_features
+  raw_targets: hvac_targets
+
+  bronze_features: bronze_hvac_features
+  bronze_targets: bronze_hvac_targets
+
+  silver: silver_hvac
+
+  gold: gold_hvac
+  

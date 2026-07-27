@@ -1,5 +1,7 @@
 from langgraph.types import interrupt
 
+from database.building.topology import ROOM_NAMES, BUILDING_WIDE
+
 LIMITS = {
     "temperature": (16.0, 30.0),
     "setpoint_c": (16.0, 30.0),
@@ -7,6 +9,7 @@ LIMITS = {
     "vfd_pct": (0, 100),
 }
 KNOWN_TARGETS = {"hvac", "lighting", "access", "ventilation", "bms"}
+KNOWN_ROOMS = set(ROOM_NAMES) | {BUILDING_WIDE}
 MAX_REVISIONS = 2
 
 
@@ -20,9 +23,13 @@ def guardrail_agent(state):
         target = str(a.get("target", "")).lower()
         param = str(a.get("parameter", "")).lower()
         value = a.get("value")
+        room = a.get("room")
 
         if target and target not in KNOWN_TARGETS:
             violations.append(f"unknown target '{target}'")
+
+        if room and room not in KNOWN_ROOMS:
+            violations.append(f"unknown room '{room}'")
 
         if param in LIMITS and isinstance(value, (int, float)):
             lo, hi = LIMITS[param]

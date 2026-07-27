@@ -1,10 +1,13 @@
 from llm.groq_client import chat, chat_json
+from database.building.topology import BUILDING_WIDE
 
 
 def coordination_agent(state):
+    target_room = state.get("target_room", BUILDING_WIDE)
     context = {
         "request": state["user_request"],
         "intent": state.get("intent"),
+        "target_room": target_room,
         "retrieved_data": state.get("retrieved_data", {}),
         "domains": state.get("domain_outputs", {}),
         "analysis": state.get("analysis_result", {}),
@@ -23,8 +26,11 @@ def coordination_agent(state):
             "-- the summary alone answers the user. Every action's target "
             "MUST be one of: hvac, lighting, access, ventilation, bms -- "
             "never a sensor or tool name. A temperature setpoint change "
-            "always uses target 'hvac' and parameter 'setpoint_c'. Return "
-            '{"actions": [{"target": str, "parameter": str, "value": number}], '
+            "always uses target 'hvac' and parameter 'setpoint_c'. Every "
+            "action MUST also include 'room', set to context.target_room "
+            f'verbatim (use "{BUILDING_WIDE}" only when target_room is '
+            f'"{BUILDING_WIDE}"). Return '
+            '{"actions": [{"target": str, "room": str, "parameter": str, "value": number}], '
             '"risk": "low"|"medium"|"high"}.'
         ),
         user=f"{context}",

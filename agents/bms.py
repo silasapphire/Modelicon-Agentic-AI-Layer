@@ -30,7 +30,11 @@ def bms_agent(state):
         results.append(call_tool("bms_write", **a))
         value = a.get("value")
         if str(a.get("parameter", "")).lower() == "setpoint_c" and isinstance(value, (int, float)):
-            call_tool("set_temperature", temp_c=value)
+            room = a.get("room")
+            if room:
+                call_tool("set_temperature", temp_c=value, room=room)
+            else:
+                call_tool("set_temperature", temp_c=value)
 
     return {
         "execution_result": {"executed": True, "acks": results},

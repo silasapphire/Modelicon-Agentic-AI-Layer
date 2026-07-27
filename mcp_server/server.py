@@ -2,9 +2,10 @@ import random
 
 from mcp.server.fastmcp import FastMCP
 
-from database.building.building_queries import get_room_temperature
+from database.building.building_queries import get_latest_sensor_data, get_room_temperature
 from database.building.building_writes import apply_bms_command
 from database.building.init_building_db import init_building_db
+from database.building.topology import is_known_room, topology_summary
 from database.memory.init_memory_db import init_memory_db
 from database.memory.memory_queries import create_session, save_tool_call
 
@@ -30,9 +31,9 @@ _DEFAULT_TEMP_C = 24.3
 _SERVER_SESSION_ID = create_session(user_id="mcp-server")
 
 _POWER_LOOKUP_C = {
-    16: 5.0, 17: 4.2, 18: 3.5, 19: 2.9, 20: 2.4, 21: 1.6,
-    22: 1.0,
-    23: 1.3, 24: 1.7, 25: 2.2, 26: 2.8, 27: 3.5, 28: 4.3, 29: 5.2, 30: 6.2,
+    16: 1.0, 17: 1.2, 18: 1.4, 19: 1.6, 20: 1.8, 21: 2.0,
+    22: 2.2,
+    23: 2.4, 24: 2.6, 25: 2.8, 26: 3.0, 27: 3.2, 28: 3.4, 29: 3.6, 30: 4.0,
 }
 def _load_persisted_temp_c() -> float:
     last_reading = get_room_temperature(_THERMOSTAT_TARGET)
@@ -50,7 +51,26 @@ def _power_for(temp_c: float) -> float:
 
 
 @mcp.tool()
-def sensor_data() -> dict:
+def building_topology() -> dict:
+    """Static building structure: floors and the rooms on each floor."""
+    return topology_summary()
+
+
+@mcp.tool()
+def sensor_data(room: str | None = None) -> dict:
+    """Latest sensor snapshot. Pass a known room name for a room-scoped
+    reading (falls back to the building-wide default if that room has no
+    readings yet); omit it for the whole-building snapshot."""
+    if room and is_known_room(room):
+        latest = get_latest_sensor_data(room_name=room)
+        if latest:
+            return {
+                "room": room,
+                "temp_c": latest.get("temperature"),
+                "humidity": latest.get("humidity"),
+                "co2_ppm": latest.get("co2"),
+                "occupancy": latest.get("occupancy"),
+            }
     return {"temp_c": _current_temp_c, "humidity": 55, "co2_ppm": 640, "occupancy": 18}
 
 
@@ -70,21 +90,37 @@ def thermal_lookup_table() -> dict:
 
 
 @mcp.tool()
-def current_temperature() -> dict:
+def current_temperature(room: str | None = None) -> dict:
+    """Live setpoint + power draw. Pass a known room name for that room's
+    own latest reading; omit it for the building-wide thermostat."""
+    if room and is_known_room(room):
+        last_reading = get_room_temperature(room)
+        temp_c = float(last_reading["temperature"]) if last_reading and last_reading.get("temperature") is not None else _current_temp_c
+        return {"room": room, "temp_c": temp_c, "power_mw": _power_for(temp_c)}
     return {"temp_c": _current_temp_c, "power_mw": _power_for(_current_temp_c)}
 
 
 @mcp.tool()
-def set_temperature(temp_c: float = 24.3) -> dict:
-    global _current_temp_c
-    _current_temp_c = temp_c
-    persisted = apply_bms_command(target=_THERMOSTAT_TARGET, parameter="setpoint_c", value=temp_c)
-    return {
-        "temp_c": _current_temp_c,
-        "power_mw": _power_for(_current_temp_c),
+def set_temperature(temp_c: float = 24.3, room: str | None = None) -> dict:
+    """Write a new setpoint. Pass a known room name to target that room
+    specifically; omit it to change the building-wide thermostat (the
+    behaviour every caller had before rooms existed)."""
+    target = room if (room and is_known_room(room)) else _THERMOSTAT_TARGET
+    persisted = apply_bms_command(target=target, parameter="setpoint_c", value=temp_c)
+
+    if target == _THERMOSTAT_TARGET:
+        global _current_temp_c
+        _current_temp_c = temp_c
+
+    response = {
+        "temp_c": temp_c,
+        "power_mw": _power_for(temp_c),
         "ack": True,
         "persisted": persisted,
     }
+    if room:
+        response["room"] = room
+    return response
 
 
 @mcp.tool()
@@ -128,11 +164,21 @@ def modelica_sim(setpoint_c: float | None = None) -> dict:
 
 
 @mcp.tool()
-def bms_write(target: str = "", parameter: str = "", value: float | None = None) -> dict:
-    persisted = apply_bms_command(target=target, parameter=parameter, value=value)
+def bms_write(target: str = "", parameter: str = "", value: float | None = None, room: str | None = None) -> dict:
+    """Generic control write. ``target`` stays a category (hvac/lighting/
+    ...); when ``room`` is a known room name the value is persisted under
+    that room instead of the bare category name -- this is what lets a
+    thermal write actually land on "Floor 2 Room 1" instead of a
+    catch-all "hvac" row."""
+    persist_target = room if (room and is_known_room(room)) else target
+    persisted = apply_bms_command(target=persist_target, parameter=parameter, value=value)
+
+    written = {"target": target, "parameter": parameter, "value": value}
+    if room:
+        written["room"] = room
 
     response = {
-        "written": {"target": target, "parameter": parameter, "value": value},
+        "written": written,
         "ack": bool(persisted.get("success")),
         "latency_ms": random.randint(20, 90),
         "persisted": persisted,

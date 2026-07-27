@@ -1,9 +1,13 @@
 from tools.mock_tools import call_tool
+from database.building.topology import BUILDING_WIDE
 
 def query_agent(state):
+    room = state.get("target_room")
+    room = room if room and room != BUILDING_WIDE else None
 
     data = {
-        "sensors": call_tool("sensor_data"),
+        "topology": call_tool("building_topology"),
+        "sensors": call_tool("sensor_data", room=room) if room else call_tool("sensor_data"),
         "history": call_tool("timeseries_db"),
         "weather": call_tool("weather"),
     }
@@ -11,6 +15,6 @@ def query_agent(state):
     return {
         "retrieved_data": data,
         "log": [
-            "query: fetched sensors, history, weather"
+            f"query: fetched sensors{f' (room={room})' if room else ''}, history, weather, topology"
         ],
     }

@@ -13,6 +13,7 @@ class BuildingState(TypedDict, total=False):
     data_required: bool
     active_domains: list
     emergency: bool
+    target_room: str
 
     retrieved_data: dict
 
