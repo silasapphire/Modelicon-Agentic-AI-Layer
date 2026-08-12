@@ -63,3 +63,17 @@ def test_bms_read_agent_writes_domain_output():
         result = bms_read_agent({"user_request": "status check"})
     assert "bms" in result["domain_outputs"]
     assert result["domain_outputs"]["bms"]["recommendation"] == "all systems nominal"
+
+
+def test_bms_read_agent_passes_room_to_tools():
+    with patch("agents.bms.chat", return_value="all systems nominal"):
+        with patch("agents.bms.call_tool", return_value={"offline_devices": 0}) as mock_call_tool:
+            bms_read_agent({"user_request": "status check", "target_room": "Floor 2 Room 3"})
+    mock_call_tool.assert_called_once_with("device_health", room="Floor 2 Room 3")
+
+
+def test_bms_read_agent_omits_room_when_building_wide():
+    with patch("agents.bms.chat", return_value="all systems nominal"):
+        with patch("agents.bms.call_tool", return_value={"rooms": {}}) as mock_call_tool:
+            bms_read_agent({"user_request": "status check", "target_room": "building-wide"})
+    mock_call_tool.assert_called_once_with("device_health")

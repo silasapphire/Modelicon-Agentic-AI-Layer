@@ -1,4 +1,4 @@
-from llm.groq_client import chat, chat_json
+from llm.ollama_client import chat, chat_json
 from database.building.topology import BUILDING_WIDE
 
 
@@ -44,7 +44,13 @@ def coordination_agent(state):
             "plan below. If the plan has no actions, answer the request "
             "directly using the findings -- do not mention a 'plan' or "
             "that one is missing. If it has actions, summarise what will "
-            "be done and why."
+            "be done and why. Only surface information that answers what "
+            "the user actually asked. The findings below may contain "
+            "energy-efficiency recommendations, optimal/best setpoints, "
+            "power-saving estimates, or historical trends gathered for "
+            "other purposes -- do NOT mention any of that unless the "
+            "user's request specifically asked about energy, efficiency, "
+            "savings, optimization, or trends."
         ),
         user=f"Request: {context['request']}\nFindings: {context}\nPlan: {plan}",
     )

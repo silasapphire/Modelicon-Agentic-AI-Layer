@@ -1,5 +1,5 @@
-from llm.groq_client import chat_json
-from database.building.topology import ROOM_NAMES, BUILDING_WIDE
+from llm.ollama_client import chat_json
+from database.building.topology import ROOM_NAMES, FLOOR_LABELS, BUILDING_WIDE, is_known_floor
 
 DOMAINS = ["thermal", "lighting", "access", "safety", "monitor", "bms"]
 
@@ -14,7 +14,9 @@ _SYSTEM = (
     f" active_domains: subset of {DOMAINS} relevant to the request\n"
     " emergency: true only for fire/smoke/gas/security threats\n"
     " target_room: the exact room name from the list above if the request "
-    f'names or clearly implies one specific room, otherwise "{BUILDING_WIDE}"'
+    "names or clearly implies one specific room; one of "
+    f"{list(FLOOR_LABELS)} if the request refers to a whole floor rather "
+    f'than one room; otherwise "{BUILDING_WIDE}" for the whole building'
 )
 
 
@@ -39,7 +41,7 @@ def supervisor_agent(state):
         domains = ["safety"]
 
     target_room = plan.get("target_room", BUILDING_WIDE)
-    if target_room not in ROOM_NAMES:
+    if target_room not in ROOM_NAMES and not is_known_floor(target_room):
         target_room = BUILDING_WIDE
 
     return {

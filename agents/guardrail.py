@@ -1,6 +1,6 @@
 from langgraph.types import interrupt
 
-from database.building.topology import ROOM_NAMES, BUILDING_WIDE
+from database.building.topology import ROOM_NAMES, FLOOR_LABELS, BUILDING_WIDE
 
 LIMITS = {
     "temperature": (16.0, 30.0),
@@ -9,7 +9,7 @@ LIMITS = {
     "vfd_pct": (0, 100),
 }
 KNOWN_TARGETS = {"hvac", "lighting", "access", "ventilation", "bms"}
-KNOWN_ROOMS = set(ROOM_NAMES) | {BUILDING_WIDE}
+KNOWN_ROOMS = set(ROOM_NAMES) | set(FLOOR_LABELS) | {BUILDING_WIDE}
 MAX_REVISIONS = 2
 
 

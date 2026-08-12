@@ -8,6 +8,7 @@ def query_agent(state):
     data = {
         "topology": call_tool("building_topology"),
         "sensors": call_tool("sensor_data", room=room) if room else call_tool("sensor_data"),
+        "all_rooms": call_tool("all_rooms_status"),
         "history": call_tool("timeseries_db"),
         "weather": call_tool("weather"),
     }
@@ -15,6 +16,7 @@ def query_agent(state):
     return {
         "retrieved_data": data,
         "log": [
-            f"query: fetched sensors{f' (room={room})' if room else ''}, history, weather, topology"
+            f"query: fetched sensors{f' (room={room})' if room else ''}, "
+            "all_rooms, history, weather, topology"
         ],
     }

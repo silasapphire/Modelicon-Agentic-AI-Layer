@@ -1,14 +1,24 @@
-from llm.groq_client import chat
+from llm.ollama_client import chat
 from tools.mock_tools import call_tool
+from database.building.topology import BUILDING_WIDE
 
 
 def bms_read_agent(state):
-    readings = {"device_health": call_tool("device_health")}
+    room = state.get("target_room")
+    room = room if room and room != BUILDING_WIDE else None
+
+    readings = {
+        "room": room or BUILDING_WIDE,
+        "device_health": call_tool("device_health", room=room) if room else call_tool("device_health"),
+    }
     recommendation = chat(
         system=(
             "You are the BMS agent, reporting current BMS equipment "
             "status (read-only). Given the readings and the user "
-            "request, give a short status summary (1-2 sentences)."
+            "request, give a short status summary (1-2 sentences). Name "
+            "the room if one is set in readings; if readings contain a "
+            "per-room breakdown instead, use it to identify which room "
+            "has an issue."
         ),
         user=f"User request: {state['user_request']}\nReadings: {readings}",
     )

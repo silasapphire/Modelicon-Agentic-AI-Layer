@@ -3,11 +3,11 @@ from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
 
-from database.building.building_queries import get_latest_sensor_data, get_room_temperature
+from database.building.building_queries import get_all_rooms_latest, get_latest_sensor_data, get_room_temperature
 from database.building.building_writes import apply_bms_command
 from database.building.hvac_twin import predict_comfort_and_load
 from database.building.init_building_db import init_building_db
-from database.building.topology import is_known_room, topology_summary
+from database.building.topology import ROOM_NAMES, is_known_room, topology_summary
 from database.memory.init_memory_db import init_memory_db
 from database.memory.memory_queries import create_session, save_tool_call
 
@@ -52,10 +52,63 @@ def _power_for(temp_c: float) -> float:
     return _POWER_LOOKUP_C[nearest]
 
 
+def _room_temp_and_power(room: str | None) -> tuple[float, float, str | None]:
+    """Resolve (temp_c, power_mw, room) for a known room, else the
+    building-wide thermostat (room=None in the return)."""
+    if room and is_known_room(room):
+        last_reading = get_room_temperature(room)
+        temp_c = float(last_reading["temperature"]) if last_reading and last_reading.get("temperature") is not None else _current_temp_c
+        return temp_c, _power_for(temp_c), room
+    return _current_temp_c, _power_for(_current_temp_c), None
+
+
+def _seed_room_baselines() -> dict[str, dict[str, object]]:
+    """Deterministic-but-distinct mock readings per room for the domains
+    that have no real per-room table (lighting/access/safety/monitor).
+    Seeded on process start so values stay stable for the life of the
+    server instead of re-randomising on every tool call."""
+    baselines = {}
+    for name in ROOM_NAMES:
+        rng = random.Random(f"room-baseline::{name}")
+        baselines[name] = {
+            "lux": rng.randint(150, 380),
+            "daylight_contribution": round(rng.uniform(0.15, 0.55), 2),
+            "active_badges": rng.randint(1, 6),
+            "unauthorized_attempts": 0,
+            "gas_ppm": rng.randint(5, 25),
+            "offline_devices": 0,
+        }
+    return baselines
+
+
+_ROOM_BASELINES = _seed_room_baselines()
+
+
 @mcp.tool()
 def building_topology() -> dict:
     """Static building structure: floors and the rooms on each floor."""
     return topology_summary()
+
+
+@mcp.tool()
+def all_rooms_status() -> dict:
+    """Latest temperature/humidity/CO2/occupancy for every known room in
+    one call -- use this for cross-room comparisons ("which room is
+    hottest", "highest CO2 room") instead of the single-room tools."""
+    latest_by_room = {row["room_name"]: row for row in get_all_rooms_latest()}
+    rooms = []
+    for name in ROOM_NAMES:
+        row = latest_by_room.get(name, {})
+        rooms.append(
+            {
+                "room_name": name,
+                "temp_c": row.get("temperature"),
+                "humidity": row.get("humidity"),
+                "co2_ppm": row.get("co2"),
+                "occupancy": row.get("occupancy"),
+            }
+        )
+    return {"rooms": rooms}
 
 
 @mcp.tool()
@@ -95,11 +148,11 @@ def thermal_lookup_table() -> dict:
 def current_temperature(room: str | None = None) -> dict:
     """Live setpoint + power draw. Pass a known room name for that room's
     own latest reading; omit it for the building-wide thermostat."""
-    if room and is_known_room(room):
-        last_reading = get_room_temperature(room)
-        temp_c = float(last_reading["temperature"]) if last_reading and last_reading.get("temperature") is not None else _current_temp_c
-        return {"room": room, "temp_c": temp_c, "power_mw": _power_for(temp_c)}
-    return {"temp_c": _current_temp_c, "power_mw": _power_for(_current_temp_c)}
+    temp_c, power_mw, resolved_room = _room_temp_and_power(room)
+    result = {"temp_c": temp_c, "power_mw": power_mw}
+    if resolved_room:
+        result["room"] = resolved_room
+    return result
 
 
 @mcp.tool()
@@ -126,53 +179,122 @@ def set_temperature(temp_c: float = 24.3, room: str | None = None) -> dict:
 
 
 @mcp.tool()
-def lux_sensor() -> dict:
-    return {"lux": 210, "target": 400}
+def lux_sensor(room: str | None = None) -> dict:
+    """Ambient light level in lux. Pass a known room name for that room's
+    own reading; omit it for a breakdown across every room."""
+    if room and is_known_room(room):
+        return {"room": room, "lux": _ROOM_BASELINES[room]["lux"], "target": 400}
+    return {
+        "target": 400,
+        "rooms": {name: {"lux": _ROOM_BASELINES[name]["lux"]} for name in ROOM_NAMES},
+    }
 
 
 @mcp.tool()
-def daylight() -> dict:
-    return {"daylight_contribution": 0.35}
+def daylight(room: str | None = None) -> dict:
+    """Estimated daylight contribution (0-1). Room-scoped or a
+    building-wide breakdown across every room."""
+    if room and is_known_room(room):
+        return {"room": room, "daylight_contribution": _ROOM_BASELINES[room]["daylight_contribution"]}
+    return {
+        "rooms": {
+            name: {"daylight_contribution": _ROOM_BASELINES[name]["daylight_contribution"]}
+            for name in ROOM_NAMES
+        }
+    }
 
 
 @mcp.tool()
-def access_events() -> dict:
-    return {"active_badges": 18, "unauthorized_attempts": 0}
+def access_events(room: str | None = None) -> dict:
+    """Badge/occupancy activity. Room-scoped, or building-wide totals plus
+    a per-room breakdown."""
+    if room and is_known_room(room):
+        base = _ROOM_BASELINES[room]
+        return {"room": room, "active_badges": base["active_badges"], "unauthorized_attempts": base["unauthorized_attempts"]}
+    return {
+        "active_badges": sum(b["active_badges"] for b in _ROOM_BASELINES.values()),
+        "unauthorized_attempts": sum(b["unauthorized_attempts"] for b in _ROOM_BASELINES.values()),
+        "rooms": {
+            name: {
+                "active_badges": _ROOM_BASELINES[name]["active_badges"],
+                "unauthorized_attempts": _ROOM_BASELINES[name]["unauthorized_attempts"],
+            }
+            for name in ROOM_NAMES
+        },
+    }
 
 
 @mcp.tool()
-def fire_alarm() -> dict:
-    return {"fire": False, "smoke": False, "gas_ppm": 12}
+def fire_alarm(room: str | None = None) -> dict:
+    """Fire/smoke/gas status. Room-scoped, or a building-wide view (true
+    if any room is alarming) plus a per-room breakdown."""
+    if room and is_known_room(room):
+        return {"room": room, "fire": False, "smoke": False, "gas_ppm": _ROOM_BASELINES[room]["gas_ppm"]}
+    return {
+        "fire": False,
+        "smoke": False,
+        "gas_ppm": max(b["gas_ppm"] for b in _ROOM_BASELINES.values()),
+        "rooms": {
+            name: {"fire": False, "smoke": False, "gas_ppm": _ROOM_BASELINES[name]["gas_ppm"]}
+            for name in ROOM_NAMES
+        },
+    }
 
 
 @mcp.tool()
-def device_health() -> dict:
-    return {"offline_devices": 0, "faults": []}
+def device_health(room: str | None = None) -> dict:
+    """Equipment fault status. Room-scoped, or a building-wide summary
+    plus a per-room breakdown."""
+    if room and is_known_room(room):
+        return {"room": room, "offline_devices": _ROOM_BASELINES[room]["offline_devices"], "faults": []}
+    return {
+        "offline_devices": sum(b["offline_devices"] for b in _ROOM_BASELINES.values()),
+        "faults": [],
+        "rooms": {
+            name: {"offline_devices": _ROOM_BASELINES[name]["offline_devices"], "faults": []}
+            for name in ROOM_NAMES
+        },
+    }
 
 
 @mcp.tool()
-def energy_optimizer(request: str = "") -> dict:
+def energy_optimizer(request: str = "", room: str | None = None) -> dict:
+    """Best setpoint from the lookup table and the saving vs. the current
+    setpoint. Room-scoped when a known room is given, else the
+    building-wide thermostat."""
     best_temp_c, best_power_mw = min(_POWER_LOOKUP_C.items(), key=lambda kv: kv[1])
-    current_power_mw = _power_for(_current_temp_c)
+    current_temp_c, current_power_mw, resolved_room = _room_temp_and_power(room)
     saving_pct = 0.0
     if current_power_mw > 0:
         saving_pct = round(max(0.0, (current_power_mw - best_power_mw) / current_power_mw * 100), 1)
-    return {"setpoint_c": float(best_temp_c), "expected_saving_pct": saving_pct}
+    result = {
+        "setpoint_c": float(best_temp_c),
+        "expected_saving_pct": saving_pct,
+        "current_setpoint_c": current_temp_c,
+    }
+    if resolved_room:
+        result["room"] = resolved_room
+    return result
 
 
 @mcp.tool()
-def modelica_sim(setpoint_c: float | None = None) -> dict:
+def modelica_sim(setpoint_c: float | None = None, room: str | None = None) -> dict:
     """Digital-twin physics simulation: projects the room forward from its
     current live temperature toward ``setpoint_c`` (defaults to the current
     setpoint) and returns the predicted thermal comfort (PMV) and average
-    HVAC load once it gets there."""
-    target = setpoint_c if setpoint_c is not None else _current_temp_c
+    HVAC load once it gets there. Pass a known room name to project that
+    room specifically instead of the building-wide thermostat."""
+    current_temp_c, _power_mw, resolved_room = _room_temp_and_power(room)
+    target = setpoint_c if setpoint_c is not None else current_temp_c
     now = datetime.now()
-    return predict_comfort_and_load(
-        current_temp_c=_current_temp_c,
+    result = predict_comfort_and_load(
+        current_temp_c=current_temp_c,
         target_temp_c=target,
         hour_of_day=now.hour + now.minute / 60.0,
     )
+    if resolved_room:
+        result["room"] = resolved_room
+    return result
 
 
 @mcp.tool()

@@ -30,13 +30,34 @@ ROOM_NAMES: tuple[str, ...] = tuple(r["room_name"] for r in ROOM_ROSTER)
 #: one specific room (e.g. "what's the average temperature?").
 BUILDING_WIDE = "building-wide"
 
+#: A ``target_room`` value can also be a whole floor (e.g. "Floor 1"),
+#: covering every room on that floor rather than one specific room.
+FLOOR_LABELS: tuple[str, ...] = tuple(f"Floor {floor}" for floor in FLOORS)
+
 
 def is_known_room(name: str | None) -> bool:
     return name in ROOM_NAMES
 
 
+def is_known_floor(name: str | None) -> bool:
+    return name in FLOOR_LABELS
+
+
 def rooms_by_floor(floor: int) -> tuple[str, ...]:
     return tuple(r["room_name"] for r in ROOM_ROSTER if r["floor"] == floor)
+
+
+def rooms_for_scope(target: str | None) -> tuple[str, ...]:
+    """Resolve a ``target_room`` value to the room(s) it covers: an exact
+    room name maps to itself, a floor label (e.g. "Floor 1") maps to every
+    room on that floor, and anything else (building-wide / unknown) maps
+    to every room in the building."""
+    if target in ROOM_NAMES:
+        return (target,)
+    if is_known_floor(target):
+        floor = int(target.split()[1])
+        return rooms_by_floor(floor)
+    return ROOM_NAMES
 
 
 def topology_summary() -> dict:

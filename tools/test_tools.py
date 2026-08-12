@@ -4,6 +4,7 @@ from tools.mock_tools import call_tool
 
 TOOL_NAMES = [
     "building_topology",
+    "all_rooms_status",
     "sensor_data",
     "timeseries_db",
     "weather",
@@ -114,3 +115,49 @@ def test_bms_write_with_room_persists_under_that_room():
     assert result["written"]["room"] == "Floor 2 Room 2"
     from database.building.building_queries import get_room_temperature
     assert get_room_temperature("Floor 2 Room 2")["temperature"] == 23
+
+
+def test_all_rooms_status_covers_every_known_room():
+    result = call_tool("all_rooms_status")
+    from database.building.topology import ROOM_NAMES
+    assert {r["room_name"] for r in result["rooms"]} == set(ROOM_NAMES)
+
+
+@pytest.mark.parametrize("tool_name", ["lux_sensor", "daylight", "access_events", "fire_alarm", "device_health"])
+def test_mock_domain_tools_are_room_scoped_and_distinct(tool_name):
+    a = call_tool(tool_name, room="Floor 1 Room 1")
+    b = call_tool(tool_name, room="Floor 2 Room 2")
+    assert a["room"] == "Floor 1 Room 1"
+    assert b["room"] == "Floor 2 Room 2"
+    assert a != b  # distinct rooms get distinct readings, not one shared constant
+
+
+@pytest.mark.parametrize("tool_name", ["lux_sensor", "daylight", "access_events", "fire_alarm", "device_health"])
+def test_mock_domain_tools_return_per_room_breakdown_when_building_wide(tool_name):
+    result = call_tool(tool_name)
+    assert "room" not in result
+    from database.building.topology import ROOM_NAMES
+    assert set(result["rooms"].keys()) == set(ROOM_NAMES)
+
+
+def test_mock_domain_tools_are_stable_across_repeated_calls():
+    first = call_tool("lux_sensor", room="Floor 3 Room 1")
+    second = call_tool("lux_sensor", room="Floor 3 Room 1")
+    assert first == second
+
+
+def test_energy_optimizer_is_room_scoped(reset_temperature):
+    call_tool("set_temperature", temp_c=21, room="Floor 1 Room 1")
+    call_tool("set_temperature", temp_c=30)  # building-wide
+    room_result = call_tool("energy_optimizer", room="Floor 1 Room 1")
+    building_result = call_tool("energy_optimizer")
+    assert room_result["room"] == "Floor 1 Room 1"
+    assert room_result["current_setpoint_c"] == 21
+    assert "room" not in building_result
+    assert building_result["current_setpoint_c"] == 30
+
+
+def test_modelica_sim_is_room_scoped(reset_temperature):
+    call_tool("set_temperature", temp_c=19, room="Floor 2 Room 3")
+    result = call_tool("modelica_sim", room="Floor 2 Room 3")
+    assert result["room"] == "Floor 2 Room 3"

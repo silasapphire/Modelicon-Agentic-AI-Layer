@@ -124,6 +124,24 @@ def get_energy_usage(room_name: str | None = None, hours: int = 24, db_path: Pat
     return result
 
 
+def get_all_rooms_latest(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """Return the latest reading for every room that has one, newest first
+    per room. Used to build cross-room comparisons ("which room is
+    hottest", "highest CO2") instead of a single building-wide snapshot."""
+    query = """
+        SELECT rm.room_name, r.temperature, r.humidity, r.co2, r.occupancy, r.timestamp
+        FROM hvac_readings r
+        JOIN rooms rm ON rm.room_id = r.room_id
+        WHERE r.reading_id IN (
+            SELECT MAX(reading_id) FROM hvac_readings GROUP BY room_id
+        )
+        ORDER BY rm.room_name
+    """
+    with get_connection(db_path) as conn:
+        rows = conn.execute(query).fetchall()
+    return _rows_to_dicts(rows)
+
+
 def get_highest_co2_room(db_path: Path = DB_PATH) -> Optional[dict[str, Any]]:
     """Return the room with the highest most-recent CO2 reading."""
     query = """
