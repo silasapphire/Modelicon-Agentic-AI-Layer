@@ -1,22 +1,18 @@
 from llm.ollama_client import chat_json
-from database.building.topology import ROOM_NAMES, FLOOR_LABELS, BUILDING_WIDE, is_known_floor
+from database.building.topology import BUILDING_WIDE
 
 DOMAINS = ["thermal", "lighting", "access", "safety", "monitor", "bms"]
 
 _SYSTEM = (
     "You are the supervisor of a smart-building control system. "
-    "The building has 3 floors, 3 rooms each. The known rooms are: "
-    f"{list(ROOM_NAMES)}.\n"
-    "Classify the user request and plan the workflow.\n"
+    "The building is a single HVAC zone -- there is only one room, so "
+    "every request applies to it; no per-room or per-floor scoping is "
+    "needed. Classify the user request and plan the workflow.\n"
     "Fields to return:\n"
     ' intent: one of "diagnose", "optimize", "control", "report", "emergency"\n'
     " data_required: true if live/historical building data is needed\n"
     f" active_domains: subset of {DOMAINS} relevant to the request\n"
-    " emergency: true only for fire/smoke/gas/security threats\n"
-    " target_room: the exact room name from the list above if the request "
-    "names or clearly implies one specific room; one of "
-    f"{list(FLOOR_LABELS)} if the request refers to a whole floor rather "
-    f'than one room; otherwise "{BUILDING_WIDE}" for the whole building'
+    " emergency: true only for fire/smoke/gas/security threats"
 )
 
 
@@ -27,7 +23,6 @@ def supervisor_agent(state):
         "data_required": True,
         "active_domains": DOMAINS,
         "emergency": False,
-        "target_room": BUILDING_WIDE,
     }
 
     plan = chat_json(_SYSTEM, req, fallback)
@@ -40,20 +35,19 @@ def supervisor_agent(state):
     if emergency:
         domains = ["safety"]
 
-    target_room = plan.get("target_room", BUILDING_WIDE)
-    if target_room not in ROOM_NAMES and not is_known_floor(target_room):
-        target_room = BUILDING_WIDE
-
     return {
         "intent": plan.get("intent", "diagnose"),
         "data_required": bool(plan.get("data_required", True)),
         "active_domains": domains,
         "emergency": emergency,
-        "target_room": target_room,
+        # Single-zone building: there is nothing to disambiguate, so
+        # target_room is always the whole (one-room) building. Kept in
+        # state because guardrail/coordinate still key actions off it.
+        "target_room": BUILDING_WIDE,
         "revision_count": state.get("revision_count", 0),
         "log": [
             f"supervisor: intent={plan.get('intent')} "
             f"data_required={plan.get('data_required')} "
-            f"domains={domains} emergency={emergency} room={target_room}"
+            f"domains={domains} emergency={emergency}"
         ],
     }

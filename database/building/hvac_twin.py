@@ -1,11 +1,13 @@
 """Physics-based HVAC digital twin.
 
 A lumped thermal-resistance/capacitance (R/C) model of a room and its
-HVAC system. This is the "Digital Twin" referenced in
-``init_building_db.py`` -- it replaces the previously hardcoded
-``modelica_sim`` stub in ``mcp_server/server.py`` with a real, if
-simplified, simulation, and backs the Digital Twin panel in the
-dashboard.
+HVAC system -- the *original* placeholder "Digital Twin" referenced in
+``init_building_db.py``. ``predict_comfort_and_load`` below (used by the
+``modelica_sim`` MCP tool) has since been replaced with a call into the
+real OpenModelica FMU at ``Building_1/HVAC.fmu``; everything else in
+this module (``HVACTwin``, ``simulate_hours``, ``comfort_pmv``) stays as
+it was and still backs the dashboard's Digital Twin panel, which has its
+own mock fallback if this import ever fails.
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta
 from typing import Any, Iterator, Optional
+
+from database.building.ingest_fmu import FMU_PATH, run_fmu_simulation
 
 
 class HVACTwin:
@@ -121,12 +125,59 @@ def predict_comfort_and_load(
     horizon_minutes: float = 30,
     dt_minutes: float = 5,
 ) -> dict[str, Any]:
-    """Project the twin forward from ``current_temp_c`` toward ``target_temp_c``.
+    """Project what setting the zone to ``target_temp_c`` would do, using
+    the real FMU digital twin instead of the lumped R/C model above.
 
-    Used by the ``modelica_sim`` MCP tool: given a candidate setpoint, this
-    answers "what would happen" -- the predicted comfort once the room
-    settles, and the average HVAC load drawn getting there.
+    Runs a short (``horizon_minutes``) FMU simulation with the room
+    setpoint (``TSetRoo.k``) pinned to ``target_temp_c`` and reports the
+    resulting comfort (PMV, off the final room temperature) and the
+    average electrical load over the window.
+
+    Known simplification: the FMU always starts from its own t=0 initial
+    conditions (a cold-start zone, not necessarily ``current_temp_c`` at
+    ``hour_of_day``) -- properly continuing from a live mid-simulation
+    state would need a saved FMU checkpoint, which this integration
+    doesn't carry between calls. ``current_temp_c``/``hour_of_day`` are
+    accepted for interface compatibility with the previous R/C twin but
+    not used to seed the FMU run. Falls back to the lumped R/C twin
+    above if the FMU is missing or the simulation fails, so the
+    ``modelica_sim`` tool still returns something sensible if the FMU
+    isn't in place.
     """
+    if not FMU_PATH.exists():
+        return _predict_comfort_and_load_rc(current_temp_c, target_temp_c, hour_of_day, horizon_minutes, dt_minutes)
+
+    try:
+        df = run_fmu_simulation(
+            fmu_path=FMU_PATH,
+            stop_time=horizon_minutes * 60,
+            # A coarse communication step (e.g. dt_minutes*60 = 300s)
+            # makes this stiff DAE's co-simulation diverge -- 10s is the
+            # step size already confirmed stable, independent of the
+            # dt_minutes the caller asked to sample results at.
+            output_interval=10,
+            start_values={"TSetRoo.k": target_temp_c + 273.15},
+        )
+    except Exception:
+        return _predict_comfort_and_load_rc(current_temp_c, target_temp_c, hour_of_day, horizon_minutes, dt_minutes)
+
+    final_room_temp_c = float(df["roomTemperature"].iloc[-1]) - 273.15
+    avg_power_kw = float(df["totalElectricPower_kW"].mean())
+    return {
+        "predicted_comfort_pmv": comfort_pmv(final_room_temp_c, target_temp_c),
+        "predicted_load_kw": round(avg_power_kw, 4),
+    }
+
+
+def _predict_comfort_and_load_rc(
+    current_temp_c: float,
+    target_temp_c: float,
+    hour_of_day: float,
+    horizon_minutes: float,
+    dt_minutes: float,
+) -> dict[str, Any]:
+    """The original lumped R/C projection -- kept as a fallback for when
+    the FMU isn't available (fresh checkout before it's been exported)."""
     twin = HVACTwin(target_temp_c=target_temp_c, initial_temp_c=current_temp_c)
     steps = max(1, int(horizon_minutes / dt_minutes))
     power_samples_w = []

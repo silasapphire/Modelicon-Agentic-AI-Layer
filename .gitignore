@@ -98,3 +98,8 @@ credentials.json
 # Misc
 
 .cache/
+
+# OpenModelica digital twin (source model + compiled FMU -- large binary,
+# machine-specific compile output)
+
+Building_1/

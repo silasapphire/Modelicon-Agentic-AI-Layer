@@ -1,5 +1,6 @@
 from llm.ollama_client import chat, chat_json
 from database.building.topology import BUILDING_WIDE
+from agents.topic_filter import filter_for_prompt
 
 
 def coordination_agent(state):
@@ -50,9 +51,16 @@ def coordination_agent(state):
             "power-saving estimates, or historical trends gathered for "
             "other purposes -- do NOT mention any of that unless the "
             "user's request specifically asked about energy, efficiency, "
-            "savings, optimization, or trends."
+            "savings, optimization, or trends. Never calculate, "
+            "estimate, or invent a temperature number yourself -- every "
+            "number in your response must come verbatim from the "
+            "findings below."
         ),
-        user=f"Request: {context['request']}\nFindings: {context}\nPlan: {plan}",
+        user=(
+            f"Request: {context['request']}\n"
+            f"Findings: {filter_for_prompt(context, context['request'])}\n"
+            f"Plan: {plan}"
+        ),
     )
     plan["summary"] = summary
 
